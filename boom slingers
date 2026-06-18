@@ -1,0 +1,416 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Boom Slingers — Prototype</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body { height:100%; margin:0; background:#2b2f3a; color:#fff; font-family:sans-serif; -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+    #game { display:block; margin:0 auto; background:#9ec9ff; box-shadow:0 8px 20px rgba(0,0,0,.5); touch-action:none; }
+    #ui { position:fixed; left:12px; top:12px; }
+    button { padding:8px 12px; margin-right:8px; }
+    #hud { position:fixed; right:12px; top:12px; text-align:right; }
+    .small { font-size:13px; opacity:.9; }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="960" height="540"></canvas>
+  <div id="ui">
+    <button id="restart">Restart Level</button>
+    <button id="next">Next Level</button>
+    <span class="small">Drag and release to fling bombs. Click anywhere to pause.</span>
+  </div>
+  <div id="hud"><div id="score">Score: 0</div><div id="level">Level: 1</div></div>
+
+<script>
+/*
+Boom Slingers — simple 2D physics slingshot prototype
+Features:
+- Drag-to-aim and release to launch bombs
+- Gravity, simple Euler integration
+- Blocks (targets) can be destroyed by explosion radius and impulse
+- Explosion visual and screen shake
+- Multiple levels (array below)
+- Touch + mouse support
+- No external libs
+*/
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+let gravity = 900; // px/s^2
+let dt = 1/60;
+let entities = []; // dynamic: bombs, blocks
+let bombs = [];
+let blocks = [];
+let explosions = [];
+let score = 0;
+let levelIndex = 0;
+let paused = false;
+
+// Slingshot anchor
+const anchor = {x:150, y: H - 120};
+let aiming = false;
+let aimPos = {x:anchor.x, y:anchor.y};
+let currentBomb = null;
+
+// Level definitions: array of block layouts
+const levels = [
+  // level 1
+  {blocks: [
+    {x:680,y:380,w:120,h:20,health:1},
+    {x:680,y:340,w:40,h:40,health:1},
+    {x:740,y:340,w:40,h:40,health:1},
+    {x:710,y:300,w:100,h:20,health:2}
+  ]},
+  // level 2 - taller stack
+  {blocks: [
+    {x:760,y:380,w:40,h:40,health:1},
+    {x:720,y:380,w:40,h:40,health:1},
+    {x:680,y:380,w:40,h:40,health:1},
+    {x:700,y:340,w:140,h:20,health:2},
+    {x:700,y:300,w:60,h:60,health:3}
+  ]},
+  // level 3 - spread targets
+  {blocks: [
+    {x:640,y:420,w:80,h:20,health:1},
+    {x:720,y:420,w:80,h:20,health:1},
+    {x:680,y:360,w:120,h:20,health:2},
+    {x:820,y:360,w:40,h:40,health:1},
+    {x:560,y:360,w:40,h:40,health:1}
+  ]}
+];
+
+function startLevel(i=0){
+  entities = [];
+  bombs = [];
+  blocks = [];
+  explosions = [];
+  score = 0;
+  levelIndex = i % levels.length;
+  const L = levels[levelIndex];
+  for(const b of L.blocks){
+    const blk = {
+      type:'block',
+      x:b.x, y:b.y,
+      w:b.w, h:b.h,
+      vx:0, vy:0,
+      mass: b.w*b.h/1000 + 1,
+      health: b.health,
+      alive:true
+    };
+    blocks.push(blk);
+    entities.push(blk);
+  }
+  spawnBomb();
+  updateHUD();
+}
+
+function spawnBomb(){
+  const bomb = {
+    type:'bomb',
+    x:anchor.x, y:anchor.y,
+    vx:0, vy:0,
+    radius:12,
+    mass:2,
+    armed:true,
+    alive:true
+  };
+  bombs.push(bomb);
+  entities.push(bomb);
+  currentBomb = bomb;
+}
+
+function worldStep(dt){
+  // integrate
+  for(const e of entities){
+    if(!e.alive) continue;
+    if(e.type === 'bomb' || e.type === 'block'){
+      e.vy += gravity * dt;
+      e.x += e.vx * dt;
+      e.y += e.vy * dt;
+      // ground collision
+      if(e.y + (e.h?e.h/2: e.radius) > H - 20){
+        e.y = H - 20 - (e.h?e.h/2:e.radius);
+        if(Math.abs(e.vy) > 120){
+          // bounce with damping
+          e.vy *= -0.35;
+          e.vx *= 0.9;
+        } else e.vy = 0;
+        // friction
+        if(e.type === 'block') e.vx *= 0.98;
+      }
+    }
+  }
+  // collisions: bomb vs block (AABB circle vs rect) apply impulses
+  for(const b of bombs){
+    if(!b.alive) continue;
+    for(const blk of blocks){
+      if(!blk.alive) continue;
+      if(circleAABBOverlap(b, blk)){
+        // simple impulse: push block by bomb velocity and reduce bomb
+        const nx = (blk.x - b.x) >=0 ? 1 : -1;
+        blk.vx += b.vx*0.02* (b.mass/blk.mass);
+        blk.vy += b.vy*0.02* (b.mass/blk.mass);
+        b.vx *= 0.8;
+        b.vy *= -0.2;
+      }
+    }
+  }
+  // explosion timers handled on trigger
+  // small cleanup: remove dead entities
+  entities = entities.filter(e => e.alive);
+  bombs = bombs.filter(b => b.alive);
+  blocks = blocks.filter(b => b.alive);
+}
+
+function circleAABBOverlap(c, r){
+  const rx = r.x - r.w/2, ry = r.y - r.h/2;
+  const nearestX = Math.max(rx, Math.min(c.x, rx + r.w));
+  const nearestY = Math.max(ry, Math.min(c.y, ry + r.h));
+  const dx = c.x - nearestX, dy = c.y - nearestY;
+  return (dx*dx + dy*dy) <= (c.radius*c.radius);
+}
+
+function explode(x,y,force,radius){
+  explosions.push({x,y,age:0,r:radius});
+  // apply to blocks and bombs
+  for(const blk of blocks){
+    if(!blk.alive) continue;
+    const dx = blk.x - x, dy = blk.y - y;
+    const dist = Math.max(1, Math.hypot(dx,dy));
+    if(dist < radius + Math.max(blk.w, blk.h)){
+      const effect = (1 - dist / (radius + 1));
+      blk.vx += (dx/dist) * effect * force / blk.mass;
+      blk.vy += (dy/dist) * effect * force / blk.mass * -0.2;
+      // damage
+      const dmg = Math.ceil(effect*3);
+      blk.health -= dmg;
+      if(blk.health <= 0){
+        blk.alive = false;
+        score += 100;
+      }
+    }
+  }
+  // bombs chain reaction
+  for(const b of bombs){
+    if(!b.alive) continue;
+    const d = Math.hypot(b.x-x, b.y-y);
+    if(d < radius*0.8){
+      // trigger bomb explosion immediately
+      b.alive = false;
+      explode(b.x,b.y, force*0.6, radius*0.7);
+    }
+  }
+  // screen shake
+  shake.start(Math.min(12, radius*0.2));
+}
+
+function draw(){
+  // clear
+  ctx.clearRect(0,0,W,H);
+  // sky / ground
+  ctx.fillStyle = '#7ec0ff';
+  ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = '#5fa06b';
+  ctx.fillRect(0,H-20,W,20);
+  // draw slingshot anchor and band
+  const s = shake.value();
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  // slingshot post
+  ctx.fillStyle = '#6b4b2a';
+  ctx.fillRect(anchor.x-6, anchor.y-40, 12, 60);
+  // band
+  if(aiming && currentBomb){
+    ctx.strokeStyle = '#2b2b2b';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(anchor.x-6, anchor.y-20);
+    ctx.lineTo(aimPos.x, aimPos.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(anchor.x+6, anchor.y-20);
+    ctx.lineTo(aimPos.x, aimPos.y);
+    ctx.stroke();
+  }
+  // blocks
+  for(const blk of blocks){
+    ctx.save();
+    ctx.translate(blk.x, blk.y);
+    ctx.fillStyle = blk.health===1? '#c44' : blk.health===2? '#d98' : '#eeb';
+    ctx.fillRect(-blk.w/2, -blk.h/2, blk.w, blk.h);
+    ctx.strokeStyle = '#222';
+    ctx.strokeRect(-blk.w/2, -blk.h/2, blk.w, blk.h);
+    ctx.restore();
+  }
+  // bombs
+  for(const b of bombs){
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.fillStyle = '#111';
+    ctx.beginPath();
+    ctx.arc(0,0,b.radius,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#f55';
+    ctx.beginPath();
+    ctx.arc(-4,-4,3,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+  // explosions
+  for(const ex of explosions){
+    const alpha = Math.max(0, 1 - ex.age/0.6);
+    ctx.beginPath();
+    const rr = ex.r * (0.5 + ex.age*2);
+    const g = ctx.createRadialGradient(ex.x,ex.y, rr*0.2, ex.x,ex.y, rr);
+    g.addColorStop(0, `rgba(255,200,40,${alpha})`);
+    g.addColorStop(0.5, `rgba(255,100,20,${alpha*0.7})`);
+    g.addColorStop(1, `rgba(255,0,0,0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(ex.x-rr, ex.y-rr, rr*2, rr*2);
+  }
+  // UI overlay
+  ctx.restore();
+}
+
+let last = performance.now();
+function loop(now){
+  if(!paused){
+    const elapsed = Math.min(0.05, (now - last)/1000);
+    let acc = elapsed;
+    // fixed step
+    while(acc > 0){
+      const step = Math.min(dt, acc);
+      worldStep(step);
+      // explosion aging
+      for(const ex of explosions) ex.age += step;
+      explosions = explosions.filter(e => e.age < 0.6);
+      acc -= step;
+    }
+    last = now;
+  } else {
+    last = now;
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// Input handling (mouse + touch)
+function getPointer(e){
+  if(e.touches) {
+    const t = e.touches[0];
+    const rect = canvas.getBoundingClientRect();
+    return {x: (t.clientX - rect.left) * (canvas.width/rect.width), y: (t.clientY - rect.top) * (canvas.height/rect.height)};
+  } else {
+    const rect = canvas.getBoundingClientRect();
+    return {x: (e.clientX - rect.left) * (canvas.width/rect.width), y: (e.clientY - rect.top) * (canvas.height/rect.height)};
+  }
+}
+
+function startAim(p){
+  if(!currentBomb) return;
+  aiming = true;
+  aimPos.x = p.x; aimPos.y = p.y;
+}
+
+function moveAim(p){
+  if(!aiming) return;
+  aimPos.x = p.x; aimPos.y = p.y;
+  // clamp pull distance
+  const dx = aimPos.x - anchor.x, dy = aimPos.y - anchor.y;
+  const d = Math.hypot(dx,dy);
+  const maxd = 140;
+  if(d > maxd){
+    aimPos.x = anchor.x + dx/d * maxd;
+    aimPos.y = anchor.y + dy/d * maxd;
+  }
+}
+
+function releaseAim(p){
+  if(!aiming || !currentBomb) return;
+  aiming = false;
+  // compute launch velocity: vector from aimPos to anchor scaled
+  const dx = anchor.x - aimPos.x, dy = anchor.y - aimPos.y;
+  const power = Math.hypot(dx,dy) * 6; // tuning
+  const angx = dx / Math.hypot(dx,dy);
+  const angy = dy / Math.hypot(dx,dy);
+  currentBomb.vx = angx * power;
+  currentBomb.vy = angy * power;
+  // schedule bomb explode on contact or after time
+  setTimeout(()=>{ // fuse
+    if(currentBomb && currentBomb.alive){
+      currentBomb.alive = false;
+      explode(currentBomb.x, currentBomb.y, 650, 120);
+      spawnBomb();
+    }
+  }, 2200);
+  // also trigger explosion on impact if high speed - check in small loop
+  monitorBombImpact(currentBomb);
+  currentBomb = null;
+}
+
+function monitorBombImpact(b){
+  const check = setInterval(()=>{
+    if(!b.alive){ clearInterval(check); return; }
+    if(Math.hypot(b.vx,b.vy) < 10 && b.y > H - 60){
+      // detonate
+      b.alive = false;
+      explode(b.x,b.y,800,140);
+      spawnBomb();
+      clearInterval(check);
+    }
+    // impact with block -> explode
+    for(const blk of blocks){
+      if(!blk.alive) continue;
+      if(circleAABBOverlap(b, blk)){
+        b.alive = false;
+        explode(b.x,b.y,1200,150);
+        spawnBomb();
+        clearInterval(check);
+        break;
+      }
+    }
+  }, 80);
+}
+
+// pointer events
+canvas.addEventListener('mousedown', e => { const p = getPointer(e); startAim(p); });
+canvas.addEventListener('mousemove', e => { if(aiming) moveAim(getPointer(e)); });
+window.addEventListener('mouseup', e => { if(aiming) releaseAim(getPointer(e)); });
+
+canvas.addEventListener('touchstart', e => { e.preventDefault(); startAim(getPointer(e)); });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); moveAim(getPointer(e)); });
+window.addEventListener('touchend', e => { if(aiming) releaseAim(getPointer(e)); });
+
+// HUD buttons
+document.getElementById('restart').addEventListener('click', ()=> startLevel(levelIndex));
+document.getElementById('next').addEventListener('click', ()=> startLevel(levelIndex+1));
+canvas.addEventListener('click', ()=> { paused = !paused; });
+
+// simple screen shake
+const shake = {
+  t:0, dur:0, mag:0,
+  start(m){ this.dur=0.35; this.t=0; this.mag=m; },
+  value(){ if(this.t>this.dur) return {x:0,y:0}; this.t += dt; const f = (1 - this.t/this.dur); return {x:(Math.random()*2-1)*this.mag*f, y:(Math.random()*2-1)*this.mag*f}; }
+}
+
+function updateHUD(){ document.getElementById('score').innerText = 'Score: '+score; document.getElementById('level').innerText = 'Level: '+(levelIndex+1); }
+// Update HUD occasionally
+setInterval(updateHUD, 300);
+
+// simple auto-update to remove very slow blocks and award score
+setInterval(()=>{
+  // remove blocks that fell offscreen
+  for(const blk of blocks){
+    if(blk.alive && blk.y > H + 200){ blk.alive=false; score += 150; }
+  }
+}, 1000);
+
+// start
+startLevel(0);
+</script>
+</body>
+</html>
