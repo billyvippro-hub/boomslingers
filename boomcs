@@ -1,0 +1,52 @@
+using UnityEngine;
+
+public class Bomb : MonoBehaviour
+{
+    public float fuse = 2.2f;
+    public float explosionRadius = 3f;
+    public float explosionForce = 500f;
+    public GameObject explosionVFX;
+
+    private Rigidbody2D rb;
+    private bool launched = false;
+
+    void Awake() => rb = GetComponent<Rigidbody2D>();
+
+    public void Launch(Vector2 velocity)
+    {
+        rb.velocity = velocity;
+        launched = true;
+        Invoke(nameof(Detonate), fuse);
+    }
+
+    void OnCollisionEnter2D(Collision2D col)
+    {
+        if(!launched) return;
+        Detonate();
+    }
+
+    void Detonate()
+    {
+        // explode and apply forces to blocks with Rigidbody2D
+        Collider2D[] hits = Physics2D.OverlapCircleAll(transform.position, explosionRadius);
+        foreach(var c in hits)
+        {
+            var rb2 = c.attachedRigidbody;
+            if(rb2 != null)
+            {
+                Vector2 dir = (rb2.position - (Vector2)transform.position).normalized;
+                float dist = Vector2.Distance(rb2.position, transform.position);
+                float falloff = 1 - Mathf.Clamp01(dist / explosionRadius);
+                rb2.AddForce(dir * explosionForce * falloff);
+            }
+        }
+        if(explosionVFX) Instantiate(explosionVFX, transform.position, Quaternion.identity);
+        Destroy(gameObject);
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        Gizmos.color = Color.red;
+        Gizmos.DrawWireSphere(transform.position, explosionRadius);
+    }
+}
