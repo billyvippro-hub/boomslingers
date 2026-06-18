@@ -1,0 +1,34 @@
+using UnityEngine;
+using UnityEngine.SceneManagement;
+using System.Collections.Generic;
+
+public class GameManager : MonoBehaviour
+{
+    public Transform slingshotAnchor;
+    public GameObject bombPrefab;
+    public List<GameObject> levelPrefabs;
+    public int levelIndex = 0;
+
+    private GameObject currentBomb;
+
+    void Start()
+    {
+        LoadLevel(levelIndex);
+        SpawnBomb();
+    }
+
+    public void LoadLevel(int idx)
+    {
+        foreach (Transform child in transform) Destroy(child.gameObject);
+        levelIndex = idx % levelPrefabs.Count;
+        Instantiate(levelPrefabs[levelIndex], transform);
+    }
+
+    public void SpawnBomb()
+    {
+        currentBomb = Instantiate(bombPrefab, slingshotAnchor.position, Quaternion.identity);
+    }
+
+    public void OnNextLevel() => LoadLevel(levelIndex + 1);
+    public void OnRestart() => LoadLevel(levelIndex);
+}
