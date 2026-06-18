@@ -1,0 +1,13 @@
+using UnityEngine;
+
+public class TargetBlock : MonoBehaviour
+{
+    public int health = 1;
+    public int scoreValue = 100;
+
+    public void ApplyDamage(int d)
+    {
+        health -= d;
+        if(health <= 0) Destroy(gameObject);
+    }
+}
